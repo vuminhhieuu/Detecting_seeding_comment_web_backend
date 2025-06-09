@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     
     # TikTok API Configuration
     tiktok_api_timeout: int = 30
-    max_comments_per_video: int = 500
-    ms_token: Optional[str] = "GjnAxFIL79IIy9YPdRRWw4vNzFEHVMF_iwhfHJxTTLjFm0aS-f47eNBXGYbvzHUAYjN1NjCDb9BTh6HWgkSX1WVNMjMy4kIl7JSI0nIp9mkHuOSR-_RjXCmeIvPGx_N85mg5k8jogHAcDsxNdxPCXxMUJw==" 
+    max_comments_per_video: int = 10000
+    ms_token: Optional[str] = "kP7QUIzqUS2B1LOgBQyxzrbwHs58LFJ4PRUyCDZnq0E83YXNrzOn7-XpYoTB_ukGzwUk-Z5i3rcJTNt0guQoB5mVMVmp6NJE7y9URWcvfIedNDDS_0BlaEfNaKx9gaPbmgRLTRrqWfejUWjf5kTqNUr8NKY=" 
     max_comments_to_crawl: int = 10000
     
     # File Upload Configuration

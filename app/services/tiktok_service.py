@@ -1,163 +1,143 @@
 import asyncio
-import random
+import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import httpx
+
+from TikTokApi import TikTokApi as OfficialTikTokApi
+from TikTokApi.exceptions import TikTokException
+
 from ..models import Comment, TikTokVideoInfo
+from ..config import Settings, get_settings
+
 
 class TikTokService:
-    """Service for extracting comments from TikTok videos"""
-    
     def __init__(self):
-        self.base_url = "https://api.tiktok.com"  # Mock URL
-        self.session = httpx.AsyncClient()
-    
-    async def extract_comments(self, url: str) -> List[Dict[str, Any]]:
-        """
-        Extract comments from TikTok video URL
-        In production, this would use the unofficial TikTok API
-        For now, we'll simulate realistic API response
-        """
-        try:
-            # Simulate API delay
-            await asyncio.sleep(random.uniform(1, 3))
-            
-            # Extract video ID from URL
-            video_id = self._extract_video_id(url)
-            
-            # Generate realistic mock comments
-            mock_comments = self._generate_realistic_comments(video_id)
-            
-            return mock_comments
-            
-        except Exception as e:
-            raise Exception(f"Failed to extract comments from TikTok: {str(e)}")
-    
-    async def get_video_info(self, url: str) -> TikTokVideoInfo:
-        """Get video metadata"""
-        try:
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            
-            video_id = self._extract_video_id(url)
-            
-            return TikTokVideoInfo(
-                video_id=video_id,
-                author=f"user_{random.randint(1000, 9999)}",
-                description="Sample TikTok video description",
-                like_count=random.randint(100, 10000),
-                comment_count=random.randint(50, 500),
-                share_count=random.randint(10, 1000),
-                play_count=random.randint(1000, 100000),
-                created_at=datetime.now().isoformat()
+        self.settings: Settings = get_settings()
+        self.logger = logging.getLogger(__name__)
+        # self.session = httpx.AsyncClient() 
+        
+        if not self.settings.ms_token or self.settings.ms_token == "YOUR_MS_TOKEN_HERE":
+            self.logger.warning(
+                "MS_TOKEN is not configured or is set to the placeholder value. "
+                "TikTok crawling will likely fail. Please set it in your .env file or config."
             )
+
+    async def extract_comments(self, url: str) -> List[Dict[str, Any]]:
+        if not self.settings.ms_token or self.settings.ms_token == "YOUR_MS_TOKEN_HERE":
+            self.logger.error("MS_TOKEN is not configured. Cannot fetch comments.")
+            return []
+        comments_data: List[Dict[str, Any]] = []
+        self.logger.info(f"Attempting to crawl comments for URL: {url}")
+
+        try:
+            async with OfficialTikTokApi() as api:
+                # Sử dụng context manager sẽ tự động xử lý create_sessions và cleanup
+                # Đảm bảo headless=True (hoặc False nếu bạn có môi trường desktop và muốn xem trình duyệt)
+                # lang có thể ảnh hưởng đến ngôn ngữ của một số metadata, không phải comment text
+                await api.create_sessions(
+                    ms_tokens=[self.settings.ms_token], 
+                    num_sessions=1, 
+                    headless=True,
+                    # browser="chromium" # Cân nhắc thêm dòng này nếu vẫn gặp lỗi liên quan đến browser
+                    sleep_after=3 # Thêm sleep_after từ file tham khảo
+                )
+                
+                video = api.video(url=url)
+                
+                comment_count_api = 0
+                async for comment_raw in video.comments(count=self.settings.max_comments_to_crawl):
+                    comment_dict_api = comment_raw.as_dict
+                    
+                    user_info = comment_dict_api.get("user", {})
+                    
+                    timestamp_unix = comment_dict_api.get("create_time")
+                    timestamp_iso = datetime.fromtimestamp(timestamp_unix).isoformat() if timestamp_unix else datetime.now().isoformat()
+
+                    # Tạo dictionary với các trường bạn cần, ví dụ:
+                    comment_obj = {
+                        "comment_id": comment_dict_api.get("cid", f"generated_cid_{comment_count_api}"),
+                        "comment_text": comment_dict_api.get("text", ""),
+                        "like_count": comment_dict_api.get("digg_count", 0),
+                        "timestamp": timestamp_iso,
+                        "user_id": user_info.get("id", user_info.get("unique_id", f"generated_user_{comment_count_api}")),
+                        # "author_username": user_info.get("unique_id"), # Thêm nếu cần
+                        # "author_nickname": user_info.get("nickname"), # Thêm nếu cần
+                        # "reply_count": comment_dict_api.get("reply_comment_total", 0) # Thêm nếu cần
+                    }
+                    comments_data.append(comment_obj)
+                    comment_count_api += 1
+                    if comment_count_api % 20 == 0: # Log progress
+                        self.logger.info(f"Crawled {comment_count_api} comments for video...")
             
+            self.logger.info(f"Successfully crawled {len(comments_data)} comments for video URL: {url}")
+
+        except TikTokException as e:
+            self.logger.error(f"TikTok API error while extracting comments for {url}: {e}")
+            # Bạn có thể raise một custom exception ở đây nếu cần DataProcessor xử lý cụ thể
+            # raise TikTokCrawlError(f"Failed to crawl comments: {e}")
         except Exception as e:
-            raise Exception(f"Failed to get video info: {str(e)}")
+            self.logger.error(f"Unexpected error while extracting comments for {url}: {e}", exc_info=True)
+            # raise TikTokCrawlError(f"An unexpected error occurred: {e}")
+            
+        return comments_data
     
-    def _extract_video_id(self, url: str) -> str:
-        """Extract video ID from TikTok URL"""
-        import re
+    async def get_video_info(self, url: str) -> Optional[TikTokVideoInfo]:
+        if not self.settings.ms_token or self.settings.ms_token == "YOUR_MS_TOKEN_HERE":
+            self.logger.error("MS_TOKEN is not configured. Cannot fetch video info.")
+            return None
+
+        self.logger.info(f"Attempting to fetch video info for URL: {url}")
+        try:
+            async with OfficialTikTokApi() as api:
+                await api.create_sessions(
+                    ms_tokens=[self.settings.ms_token], 
+                    num_sessions=1, 
+                    headless=True,
+                    # browser="chromium" # Cân nhắc thêm dòng này
+                    sleep_after=3 # Thêm sleep_after từ file tham khảo
+                )
+                
+                video_obj_api = api.video(url=url)
+                video_info_api = await video_obj_api.info() # Fetches the video metadata
+
+                # Mapping data from TikTokApi's video_info_api to your TikTokVideoInfo model
+                # Tên trường có thể khác nhau tùy phiên bản TikTokApi, kiểm tra video_info_api.keys()
+                
+                author_info = video_info_api.get("author", {})
+                stats_info = video_info_api.get("stats", {})
+                
+                created_time_unix = video_info_api.get("createTime") # Hoặc "create_time"
+                created_at_iso = datetime.fromtimestamp(created_time_unix).isoformat() if created_time_unix else datetime.now().isoformat()
+
+                video_data = TikTokVideoInfo(
+                    video_id=video_info_api.get("id", "unknown_id"),
+                    author=author_info.get("uniqueId", author_info.get("nickname", "unknown_author")), # Hoặc "unique_id"
+                    description=video_info_api.get("desc", ""),
+                    like_count=stats_info.get("diggCount", 0), # Hoặc "digg_count"
+                    comment_count=stats_info.get("commentCount", 0), # Hoặc "comment_count"
+                    share_count=stats_info.get("shareCount", 0), # Hoặc "share_count"
+                    play_count=stats_info.get("playCount", 0), # Hoặc "play_count"
+                    created_at=created_at_iso
+                )
+                self.logger.info(f"Successfully fetched video info for ID: {video_data.video_id}")
+                return video_data
+
+        except TikTokException as e:
+            self.logger.error(f"TikTok API error while fetching video info for {url}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error while fetching video info for {url}: {e}", exc_info=True)
         
-        # Try different TikTok URL patterns
-        patterns = [
-            r'/video/(\d+)',
-            r'@[\w.]+/video/(\d+)',
-            r'vm\.tiktok\.com/(\w+)',
-            r'tiktok\.com/.*?/(\d+)'
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        
-        # Generate mock ID if extraction fails
-        return f"video_{random.randint(100000000000000000, 999999999999999999)}"
-    
-    def _generate_realistic_comments(self, video_id: str) -> List[Dict[str, Any]]:
-        """Generate realistic Vietnamese comments for testing"""
-        
-        # Realistic normal comments
-        normal_comments = [
-            "Video hay quá! Cảm ơn bạn đã chia sẻ",
-            "Âm nhạc trong video này hay ghê!",
-            "Haha clip này vui quá! 😂",
-            "Cảm ơn bạn đã làm video này",
-            "Mình rất thích phong cách của bạn",
-            "Video chất lượng cao quá!",
-            "Bạn làm video rất chuyên nghiệp",
-            "Nội dung hay và bổ ích",
-            "Cảm ơn bạn đã chia sẻ kiến thức",
-            "Video này giúp mình học được nhiều điều",
-            "Quá tuyệt vời! 👏",
-            "Mình đã follow bạn rồi",
-            "Chờ video tiếp theo của bạn",
-            "Bạn quay ở đâu vậy? Đẹp quá!",
-            "Outfit này đẹp ghê!",
-            "Makeup của bạn xinh quá",
-            "Bài hát gì vậy bạn?",
-            "Trend này hot ghê",
-            "Mình cũng muốn thử làm",
-            "Bạn dạy mình được không?"
-        ]
-        
-        # Realistic seeding comments
-        seeding_comments = [
-            "Sản phẩm này tuyệt vời quá! Tôi đã mua và rất hài lòng. Bạn nào cần thì inbox shop nhé! 💕",
-            "Shop này uy tín lắm các bạn ơi! Tôi đã mua nhiều lần rồi, chất lượng đảm bảo 100%",
-            "Link mua ở đâu vậy admin? Inbox em với ạ! Cần gấp quá 🥺",
-            "Sản phẩm chất lượng cao, giá cả hợp lý. Mọi người nên mua thử!",
-            "Shop bán hàng uy tín, giao hàng nhanh. Recommend cho mọi người! ⭐⭐⭐⭐⭐",
-            "Mình đã order rồi, chất lượng tốt lắm. Ai cần thì liên hệ shop nhé",
-            "Giá rẻ mà chất lượng tốt. Link mua ở bio shop nha các bạn!",
-            "Đã test sản phẩm, hiệu quả thật sự. Bạn nào quan tâm inbox mình",
-            "Shop này bán đúng như quảng cáo, không lừa đảo. Tin tưởng được!",
-            "Sản phẩm hot hit này, mua ngay kẻo hết hàng. Link ở dưới comment",
-            "Freeship toàn quốc, COD tận nơi. Mọi người yên tâm order nhé!",
-            "Khuyến mãi 50% hôm nay thôi. Nhanh tay inbox admin!",
-            "Mình bán sản phẩm này, ai cần liên hệ Zalo: 0123456789",
-            "Shop cam kết hoàn tiền 100% nếu không hài lòng",
-            "Đặt hàng ngay hôm nay, tặng kèm quà xinh xắn",
-            "Sale sốc chỉ còn 99k, số lượng có hạn!",
-            "Bạn nào ở Hà Nội mình giao tận nơi luôn",
-            "Link order: bit.ly/shopuytin - Mua ngay!",
-            "Admin check inbox em với, em muốn mua gấp",
-            "Sản phẩm này mình đang dùng, hiệu quả lắm. Bán giá tốt!"
-        ]
-        
-        comments = []
-        num_comments = random.randint(30, 150)
-        
-        for i in range(num_comments):
-            # 25% chance of seeding comment (realistic ratio)
-            is_seeding = random.random() < 0.25
-            
-            if is_seeding:
-                comment_text = random.choice(seeding_comments)
-                # Seeding comments tend to have more likes
-                like_count = random.randint(5, 300)
-            else:
-                comment_text = random.choice(normal_comments)
-                like_count = random.randint(0, 100)
-            
-            # Generate realistic timestamp (last 7 days)
-            days_ago = random.randint(0, 7)
-            hours_ago = random.randint(0, 23)
-            timestamp = datetime.now() - timedelta(days=days_ago, hours=hours_ago)
-            
-            comment = {
-                "comment_id": f"comment_{video_id}_{i}",
-                "comment_text": comment_text,
-                "like_count": like_count,
-                "timestamp": timestamp.isoformat(),
-                "user_id": f"user_{random.randint(10000, 99999)}",
-                "video_id": video_id
-            }
-            
-            comments.append(comment)
-        
-        return comments
+        return None
     
     async def close(self):
-        """Close HTTP session"""
-        await self.session.aclose()
+        """Close HTTP session if it was used."""
+        # if hasattr(self, 'session') and self.session:
+        #     await self.session.aclose()
+        #     self.logger.info("TikTokService's httpx session closed.")
+        # TikTokApi's session is managed by its context manager (`async with`)
+        pass
+
+# Optional: Define custom exceptions if needed for DataProcessor to catch
+# class TikTokCrawlError(Exception):
+#     pass
