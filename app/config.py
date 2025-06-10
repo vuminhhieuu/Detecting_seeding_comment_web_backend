@@ -12,11 +12,11 @@ class Settings(BaseSettings):
     
     # Server Configuration
     host: str = "0.0.0.0"
-    port: int = 8000
-    reload: bool = True
+    port: int = int(os.getenv("PORT", 8000))
+    reload: bool = False
     
     # CORS Configuration
-    cors_origins: list = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"]
+    cors_origins: list = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080", "https://detectseedingcomment.vercel.app/"]
     cors_allow_credentials: bool = True
     cors_allow_methods: list = ["*"]
     cors_allow_headers: list = ["*"]
