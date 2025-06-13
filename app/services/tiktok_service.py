@@ -23,14 +23,22 @@ class TikTokService:
                 "TikTok crawling will likely fail. Please set at least one in your .env file or config."
             )
         
-        proxy_config = self.settings.httpx_proxies
-        if proxy_config:
-            safe_proxy_config = {k: v.replace(self.settings.proxy_password, "****") 
-                               if self.settings.proxy_password and self.settings.proxy_password in v else v 
-                               for k, v in proxy_config.items()}
-            self.logger.info(f"Proxy configuration is available: {safe_proxy_config}")
+        if self.settings.proxy_address:
+            self.logger.info(f"Proxy configured: {self.settings.proxy_address}:{self.settings.proxy_port}")
         else:
-            self.logger.warning("No proxy configuration found. TikTok might block requests.")
+            self.logger.warning("No proxy configuration found. TikTok might block requests if not using proxy.")
+
+    async def _get_playwright_proxy_object(self) -> Optional[Dict[str, str]]:
+        """Helper to create Playwright-compatible proxy object from settings."""
+        if self.settings.proxy_address and self.settings.proxy_port:
+            server_url = f"http://{self.settings.proxy_address}:{self.settings.proxy_port}"
+            proxy_obj = {"server": server_url}
+            if self.settings.proxy_username:
+                proxy_obj["username"] = self.settings.proxy_username
+            if self.settings.proxy_password:
+                proxy_obj["password"] = self.settings.proxy_password
+            return proxy_obj
+        return None
 
     async def extract_comments(self, url: str) -> List[Dict[str, Any]]:
         comments_data: List[Dict[str, Any]] = []
@@ -51,15 +59,21 @@ class TikTokService:
                 # Khởi tạo TikTokApi
                 api_instance = OfficialTikTokApi() 
                 
-                # ms_token được truyền vào create_sessions
-                await api_instance.create_sessions(
-                    ms_tokens=[current_token, ], 
-                    num_sessions=1, 
-                    headless=True,
-                    sleep_after=3,
-                    proxies=proxy_config if proxy_config else None
-                )
+                playwright_proxy_obj = await self._get_playwright_proxy_object()
+
+                create_sessions_kwargs = {
+                    "ms_tokens": [current_token],
+                    "num_sessions": 1,
+                    "headless": True,
+                    "sleep_after": 3
+                }
                 
+                if playwright_proxy_obj:
+                    # Truyền một list chứa đối tượng proxy, vì TikTokApi có thể dùng random.choice()
+                    create_sessions_kwargs["proxies"] = [playwright_proxy_obj]
+                
+                await api_instance.create_sessions(**create_sessions_kwargs)
+
                 video = api_instance.video(url=url) 
                 
                 comment_count_api = 0
@@ -124,8 +138,6 @@ class TikTokService:
     async def get_video_info(self, url: str) -> Optional[TikTokVideoInfo]:
         self.logger.info(f"Attempting to fetch video info for URL: {url}")
         
-        proxy_config = self.settings.httpx_proxies
-        
         for attempt in range(self.max_token_rotation_attempts):
             current_token = load_and_get_tiktok_token()
             if not current_token:
@@ -139,18 +151,18 @@ class TikTokService:
                 # Khởi tạo TikTokApi
                 api_instance = OfficialTikTokApi()
                 
-                 # Cấu hình proxy cho api_instance (nếu có)
-                if proxy_config:
-                    api_instance.proxies = proxy_config
-                
-                # ms_token được truyền vào create_sessions
-                await api_instance.create_sessions(
-                    ms_tokens=[current_token], 
-                    num_sessions=1, 
-                    headless=True,
-                    sleep_after=3
-                    # proxy=proxy_config # Xóa proxy khỏi đây
-                )
+                playwright_proxy_obj = await self._get_playwright_proxy_object()
+
+                create_sessions_kwargs = {
+                    "ms_tokens": [current_token],
+                    "num_sessions": 1,
+                    "headless": True,
+                    "sleep_after": 3
+                }
+                if playwright_proxy_obj:
+                    create_sessions_kwargs["proxies"] = [playwright_proxy_obj]
+
+                await api_instance.create_sessions(**create_sessions_kwargs)
                 
                 video_obj_api = api_instance.video(url=url)
                 video_info_api = await video_obj_api.info() 
