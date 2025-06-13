@@ -51,17 +51,13 @@ class TikTokService:
                 # Khởi tạo TikTokApi
                 api_instance = OfficialTikTokApi() 
                 
-                # Cấu hình proxy cho api_instance (nếu có)
-                if proxy_config:
-                    api_instance.proxies = proxy_config
-                
                 # ms_token được truyền vào create_sessions
                 await api_instance.create_sessions(
-                    ms_tokens=[current_token], 
+                    ms_tokens=[current_token, ], 
                     num_sessions=1, 
                     headless=True,
-                    sleep_after=3
-                    # proxy=proxy_config # Xóa proxy khỏi đây
+                    sleep_after=3,
+                    proxies=proxy_config if proxy_config else None
                 )
                 
                 video = api_instance.video(url=url) 
